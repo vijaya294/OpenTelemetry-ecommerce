@@ -1,26 +1,35 @@
-# syntax=docker/dockerfile:1
+# Copyright The OpenTelemetry Authors
+# SPDX-License-Identifier: Apache-2.0
 
-# Build stage
-FROM mcr.microsoft.com/dotnet/sdk:8.0-alpine AS build
+FROM --platform=${BUILDPLATFORM} mcr.microsoft.com/dotnet/sdk:8.0 AS builder
+ARG TARGETARCH
+ARG BUILD_CONFIGURATION=Release
+WORKDIR /src
+COPY ["/src/accounting/", "Accounting/"]
+COPY ["/pb/demo.proto", "Accounting/proto/"]
+RUN dotnet restore "./Accounting/Accounting.csproj" -r linux-$TARGETARCH
+WORKDIR "/src/Accounting"
 
-WORKDIR /source
+RUN dotnet build "./Accounting.csproj" -r linux-$TARGETARCH -c $BUILD_CONFIGURATION -o /app/build
 
-# Copy everything into the container
-COPY . .
+# -----------------------------------------------------------------------------
 
-# Restore and build the project
-RUN dotnet restore Accounting.csproj
-RUN dotnet build Accounting.csproj -c Release
-RUN dotnet publish Accounting.csproj -c Release -o /app
+FROM builder AS publish
+ARG TARGETARCH
+ARG BUILD_CONFIGURATION=Release
+RUN dotnet publish "./Accounting.csproj" -r linux-$TARGETARCH -c $BUILD_CONFIGURATION -o /app/publish /p:UseAppHost=false
 
-# Runtime stage
-FROM mcr.microsoft.com/dotnet/aspnet:8.0-alpine AS final
+# -----------------------------------------------------------------------------
 
+FROM mcr.microsoft.com/dotnet/aspnet:8.0
+USER app
 WORKDIR /app
+COPY --from=publish /app/publish .
 
-COPY --from=build /app .
+USER root
+RUN mkdir -p "/var/log/opentelemetry/dotnet"
+RUN chown app "/var/log/opentelemetry/dotnet"
+RUN chown app "/app/instrument.sh"
+USER app
 
-# Optionally use a non-root user
-# USER 1000
-
-ENTRYPOINT ["dotnet", "Accounting.dll"]
+ENTRYPOINT ["./instrument.sh", "dotnet", "Accounting.dll"]
